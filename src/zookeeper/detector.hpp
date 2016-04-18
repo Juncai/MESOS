@@ -37,6 +37,8 @@ namespace zookeeper {
         // The specified 'group' is expected to outlive the detector.
         explicit LeaderDetector(Group *group);
 
+        explicit LeaderDetector(Group *group, int role);
+
         virtual ~LeaderDetector();
 
         // Returns some membership after an election has occurred and a

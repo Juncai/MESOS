@@ -38,6 +38,8 @@ namespace zookeeper {
     class LeaderDetectorProcess : public Process<LeaderDetectorProcess> {
     public:
         explicit LeaderDetectorProcess(Group *group);
+        // TODO add role to the detector
+        explicit LeaderDetectorProcess(Group *group, int role);
 
         virtual ~LeaderDetectorProcess();
 
@@ -60,8 +62,18 @@ namespace zookeeper {
 
         // Potential non-retryable error.
         Option<Error> error;
+
+        // 1 for master; 2 for slave; 3 for scheduler
+        int role;
     };
 
+
+    // TODO add role to the detector
+    LeaderDetectorProcess::LeaderDetectorProcess(Group *_group, int _role)
+            : ProcessBase(ID::generate("leader-detector")),
+              group(_group),
+              leader(None()),
+              role(_role) { }
 
     LeaderDetectorProcess::LeaderDetectorProcess(Group *_group)
             : ProcessBase(ID::generate("leader-detector")),
@@ -141,13 +153,27 @@ namespace zookeeper {
         // Run an "election". The leader is the oldest member (smallest
         // membership id). We do not fulfill any of our promises if the
         // incumbent wins the election.
+        // TODO detect two leaders instead of one
         Option<Group::Membership> current;
+        Option<Group::Membership> current2;
         foreach(
         const Group::Membership &membership, memberships.get()) {
-            current = min(current, membership);
+            if (current != min(current, membership)) {
+                current2 = current;
+                current = membership;
+            } else {
+                current2 = min(current2, membership);
+            }
+//            current = min(current, membership);
         }
 
-        if (current != leader) {
+        if (current != leader &&
+            ((leader.isSome() && current2 != leader) || leader.isNone())) {
+            // TODO need to modify the logic for load balancing
+            if (current2.isSome()) {
+                current = (time(0) % 2 == 0) ? current : current2;
+            }
+
             LOG(INFO) << "Detected a new leader: "
             << (current.isSome()
                 ? "(id='" + stringify(current.get().id()) + "')"
@@ -159,12 +185,19 @@ namespace zookeeper {
                 delete promise;
             }
             promises.clear();
+            // TODO assign new leader
+            leader = current;
         }
 
-        leader = current;
+//        leader = current;
         watch(memberships.get());
     }
 
+    // TODO add role to the detector
+    LeaderDetector::LeaderDetector(Group *group, int role) {
+        process = new LeaderDetectorProcess(group, role);
+        spawn(process);
+    }
 
     LeaderDetector::LeaderDetector(Group *group) {
         process = new LeaderDetectorProcess(group);

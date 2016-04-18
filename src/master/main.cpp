@@ -341,7 +341,9 @@ int main(int argc, char** argv)
   }
   contender = contender_.get();
 
-  Try<MasterDetector*> detector_ = MasterDetector::create(zk);
+  // TODO add role to detector (1 for master)
+  Try<MasterDetector*> detector_ = MasterDetector::create(zk, 1);
+//  Try<MasterDetector*> detector_ = MasterDetector::create(zk);
   if (detector_.isError()) {
     EXIT(EXIT_FAILURE)
       << "Failed to create a master detector: " << detector_.error();

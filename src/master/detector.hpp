@@ -54,6 +54,8 @@ namespace mesos {
             //   - zk://host1:port1,host2:port2,.../path
             //   - zk://username:password@host1:port1,host2:port2,.../path
             static Try<MasterDetector *> create(const Option<std::string> &_mechanism);
+            // TODO add role to detector
+            static Try<MasterDetector *> create(const Option<std::string> &_mechanism, int role);
 
             virtual ~MasterDetector() = 0;
 
@@ -113,6 +115,10 @@ namespace mesos {
 
             // Used for testing purposes.
             explicit ZooKeeperMasterDetector(process::Owned<zookeeper::Group> group);
+
+            // TODO add role to the detector
+            explicit ZooKeeperMasterDetector(const zookeeper::URL &url, int role);
+            explicit ZooKeeperMasterDetector(process::Owned<zookeeper::Group> group, int role);
 
             virtual ~ZooKeeperMasterDetector();
 

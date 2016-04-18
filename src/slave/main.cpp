@@ -260,7 +260,9 @@ int main(int argc, char** argv)
       << "Failed to create a containerizer: " << containerizer.error();
   }
 
-  Try<MasterDetector*> detector = MasterDetector::create(master.get());
+  // TODO add role to detector (2 for slave)
+  Try<MasterDetector*> detector = MasterDetector::create(master.get(), 2);
+//  Try<MasterDetector*> detector = MasterDetector::create(master.get());
 
   if (detector.isError()) {
     EXIT(EXIT_FAILURE)

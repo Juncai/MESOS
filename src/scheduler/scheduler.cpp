@@ -179,8 +179,12 @@ public:
     }
 
     if (_detector.isNone()) {
+      // TODO add role to detector (3 for scheduler)
       Try<MasterDetector*> create =
-        MasterDetector::create(pid.isSome() ? string(pid.get()) : master);
+        MasterDetector::create(pid.isSome() ? string(pid.get()) : master, 3);
+
+//      Try<MasterDetector*> create =
+//        MasterDetector::create(pid.isSome() ? string(pid.get()) : master);
 
       if (create.isError()) {
         EXIT(EXIT_FAILURE)
