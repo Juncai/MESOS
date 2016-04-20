@@ -33,7 +33,7 @@
 #include "zookeeper/detector.hpp"
 #include "zookeeper/group.hpp"
 
-#define NUM_LEADERS 2
+#define NUM_LEADERS 3
 
 using namespace process;
 
@@ -178,19 +178,52 @@ namespace zookeeper {
 //        currents[1] = current1;
         foreach(
         const Group::Membership &membership, memberships.get()) {
-            if (currents[0] != min(currents[0], membership)) {
-                currents[1] = currents[0];
+            int maxInd = 0;
+            if (currents[0].isNone()) {
                 currents[0] = membership;
             } else {
-                currents[1] = min(currents[1], membership);
+                for (int i = 1; i < NUM_LEADERS; i++) {
+                    if (currents[i].isNone()) {
+                        maxInd = i;
+                        break;
+                    } else if (currents[i].get().id() > currents[maxInd].get().id()) {
+                        maxInd = i;
+                    }
+                }
             }
+            if (currents[maxInd].isNone() || membership.id() < currents[maxInd].get().id()) {
+                currents[maxInd] = membership;
+            }
+//            if (currents[0] != min(currents[0], membership)) {
+//                currents[1] = currents[0];
+//                currents[0] = membership;
+//            } else {
+//                currents[1] = min(currents[1], membership);
+//            }
 //            current = min(current, membership);
+        }
+
+        // make the smallest candidate as the first element
+        if (currents[0].isSome()) {
+            int minInd = 0;
+            for (int i = 1; i < NUM_LEADERS; i++) {
+                if (currents[i].isNone()) {
+                    break;
+                } else if (currents[i].get().id() < currents[minInd].get().id()) {
+                    minInd = i;
+                }
+            }
+            if (minInd != 0) {
+                Option<Group::Membership> tmp = currents[0];
+                currents[0] = currents[minInd];
+                currents[minInd] = tmp;
+            }
         }
 
         if (role == 1) {
             current = currents[0];
             for (int i = 0; i < NUM_LEADERS; i++) {
-                if (currents[i].isSome()) {
+                if (!currents[i].isNone()) {
                     // first see if saw this membership before
                     if (addrMap.find(currents[i].get().id()) != addrMap.end()) {
                         if (addrMap[currents[i].get().id()] == addInfo) {
@@ -236,6 +269,7 @@ namespace zookeeper {
             if (current != leader) {
                 LOG(INFO) << "Detected a new leader: "
                 << (current.isSome()
+                    //                    << (current.isSome()
                     ? "(id='" + stringify(current.get().id()) + "')"
                     : "None");
 
@@ -250,20 +284,30 @@ namespace zookeeper {
             }
         } else {
             bool preLeaderFound = false;
+            int numOfLeaders = 0;
             for (int i = 0; i < NUM_LEADERS; i++) {
                 if (currents[i] == leader) {
                     preLeaderFound = true;
                     break;
                 }
+                if (currents[i].isNone()) {
+                    break;
+                } else {
+                    numOfLeaders++;
+                }
             }
             if (!preLeaderFound) {
-                current = currents[0];
-                // TODO need to modify the logic for load balancing
-                if (currents[1].isSome()) {
-                    LOG(INFO) << "Detected two leaders!";
-                    current = currents[1];
-//                current = (time(0) % 2 == 0) ? current0 : current1;
-                }
+                char numStr[21];
+                sprintf(numStr, "%d", numOfLeaders);
+                LOG(INFO) << "Detected leaders: " << numStr;
+                current = currents[rand() % numOfLeaders];
+//                current = currents[0];
+//                // TODO need to modify the logic for load balancing
+//                if (currents[1].isSome()) {
+//                    LOG(INFO) << "Detected two leaders!";
+//                    current = currents[1];
+////                current = (time(0) % 2 == 0) ? current0 : current1;
+//                }
 
                 LOG(INFO) << "Detected a new leader: "
                 << (current.isSome()
