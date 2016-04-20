@@ -180,8 +180,9 @@ public:
 
     if (_detector.isNone()) {
       // TODO add role to detector (3 for scheduler)
+      string addInfo = "";
       Try<MasterDetector*> create =
-        MasterDetector::create(pid.isSome() ? string(pid.get()) : master, 3);
+        MasterDetector::create(pid.isSome() ? string(pid.get()) : master, 3, addInfo);
 
 //      Try<MasterDetector*> create =
 //        MasterDetector::create(pid.isSome() ? string(pid.get()) : master);

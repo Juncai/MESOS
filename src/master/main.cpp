@@ -342,7 +342,11 @@ int main(int argc, char** argv)
   contender = contender_.get();
 
   // TODO add role to detector (1 for master)
-  Try<MasterDetector*> detector_ = MasterDetector::create(zk, 1);
+  char portstr[21];
+  sprintf(portstr, "%d", port);
+  string addInfo = ip.get() + ":" + portstr;
+  LOG(INFO) << "Master detector with addInfo: " << addInfo;
+  Try<MasterDetector*> detector_ = MasterDetector::create(zk, 1, addInfo);
 //  Try<MasterDetector*> detector_ = MasterDetector::create(zk);
   if (detector_.isError()) {
     EXIT(EXIT_FAILURE)

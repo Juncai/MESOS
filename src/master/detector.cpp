@@ -164,7 +164,9 @@ namespace mesos {
             explicit ZooKeeperMasterDetectorProcess(Owned<Group> group);
 
             // TODO add role to detector
-            explicit ZooKeeperMasterDetectorProcess(Owned<Group> group, int role);
+            explicit ZooKeeperMasterDetectorProcess(const zookeeper::URL &url, int role, string addInfo);
+
+            explicit ZooKeeperMasterDetectorProcess(Owned<Group> group, int role, string addInfo);
 
             ~ZooKeeperMasterDetectorProcess();
 
@@ -194,7 +196,8 @@ namespace mesos {
             Option<Error> error;
         };
 
-        Try<MasterDetector *> MasterDetector::create(const Option<string> &_mechanism, int role) {
+        // TODO add role/addInfo
+        Try<MasterDetector *> MasterDetector::create(const Option<string> &_mechanism, int role, string addInfo) {
             if (_mechanism.isNone()) {
                 return new StandaloneMasterDetector();
             }
@@ -210,7 +213,7 @@ namespace mesos {
                     return Error(
                             "Expecting a (chroot) path for ZooKeeper ('/' is not supported)");
                 }
-                return new ZooKeeperMasterDetector(url.get(), role);
+                return new ZooKeeperMasterDetector(url.get(), role, addInfo);
             } else if (strings::startsWith(mechanism, "file://")) {
                 // Load the configuration out of a file. While Mesos and related
                 // programs always use <stout/flags> to process the command line
@@ -360,19 +363,19 @@ namespace mesos {
 
         // TODO add role to the detector
         ZooKeeperMasterDetectorProcess::ZooKeeperMasterDetectorProcess(
-                const zookeeper::URL &url, int role)
+                const zookeeper::URL &url, int role, string addInfo)
                 : ZooKeeperMasterDetectorProcess(Owned<Group>(
                 new Group(url.servers,
                           MASTER_DETECTOR_ZK_SESSION_TIMEOUT,
                           url.path,
-                          url.authentication)), role) { }
+                          url.authentication)), role, addInfo) { }
 
 
         ZooKeeperMasterDetectorProcess::ZooKeeperMasterDetectorProcess(
-                Owned<Group> _group, int role)
+                Owned<Group> _group, int role, string addInfo)
                 : ProcessBase(ID::generate("zookeeper-master-detector")),
                   group(_group),
-                  detector(group.get(), role),
+                  detector(group.get(), role, addInfo),
                   leader(None()) { }
 
 // TODO(benh): Get ZooKeeper timeout from configuration.
@@ -550,8 +553,13 @@ namespace mesos {
 
 
         // TODO add role to the detector
-        ZooKeeperMasterDetector::ZooKeeperMasterDetector(Owned<Group> group, int role) {
-            process = new ZooKeeperMasterDetectorProcess(group, role);
+        ZooKeeperMasterDetector::ZooKeeperMasterDetector(const zookeeper::URL &url, int role, string addInfo) {
+            process = new ZooKeeperMasterDetectorProcess(url, role, addInfo);
+            spawn(process);
+        }
+
+        ZooKeeperMasterDetector::ZooKeeperMasterDetector(Owned<Group> group, int role, string addInfo) {
+            process = new ZooKeeperMasterDetectorProcess(group, role, addInfo);
             spawn(process);
         }
 

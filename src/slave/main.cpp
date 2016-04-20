@@ -261,7 +261,8 @@ int main(int argc, char** argv)
   }
 
   // TODO add role to detector (2 for slave)
-  Try<MasterDetector*> detector = MasterDetector::create(master.get(), 2);
+  string addInfo = "";
+  Try<MasterDetector*> detector = MasterDetector::create(master.get(), 2, addInfo);
 //  Try<MasterDetector*> detector = MasterDetector::create(master.get());
 
   if (detector.isError()) {
