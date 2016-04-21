@@ -300,7 +300,52 @@ namespace zookeeper {
                 char numStr[21];
                 sprintf(numStr, "%d", numOfLeaders);
                 LOG(INFO) << "Detected leaders: " << numStr;
-                current = currents[rand() % numOfLeaders];
+
+                current = currents[0];
+
+                if (numOfLeaders > 0) {
+
+                    string curr_data = group->data(current.get()).get().get();
+                    JSON::Object curr_object = JSON::parse<JSON::Object>(curr_data).get();
+
+                    for (int i =0; i < numOfLeaders; i++) {
+
+                        string temp_data = group->data(currents[i].get()).get().get();
+                        JSON::Object temp_object = JSON::parse<JSON::Object>(temp_data).get();
+
+                        if (temp_object.values.find("updated") != temp_object.values.end()) {
+                            if (stringify(temp_object.values["updated"]) < stringify(curr_object.values["updated"])) {
+                                current = currents[i];
+                                curr_data = group->data(current.get()).get().get();
+                                curr_object = JSON::parse<JSON::Object>(curr_data).get();
+                            }
+                        } else {
+                            current = currents[i];
+                            break;
+                        }
+                    }
+
+                }
+
+                if (current.isSome()) {
+                    string data_str = group->data(current.get()).get().get();
+                    JSON::Object object_json = JSON::parse<JSON::Object>(data_str).get();
+
+                    object_json.values["updated"] = static_cast<long int> (time(0));
+
+                    string data = stringify(object_json);
+
+                    bool result = group->post(current.get(), data).get();
+
+                    if (result) {
+                        LOG(INFO) << "SUCCESS! Update a leader: " << "(id='" << stringify(current.get().id()) << ")";
+                    } else {
+                        LOG(INFO) << "FAIL! Update a leader: " << "(id='" << stringify(current.get().id()) << ")";
+                    }
+
+                }
+
+//                current = currents[rand() % numOfLeaders];
 //                current = currents[0];
 //                // TODO need to modify the logic for load balancing
 //                if (currents[1].isSome()) {
@@ -308,6 +353,8 @@ namespace zookeeper {
 //                    current = currents[1];
 ////                current = (time(0) % 2 == 0) ? current0 : current1;
 //                }
+
+
 
                 LOG(INFO) << "Detected a new leader: "
                 << (current.isSome()

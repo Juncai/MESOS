@@ -143,6 +143,16 @@ namespace zookeeper {
         // e.g., it can be removed before this call can read it content.
         process::Future<Option<std::string>> data(const Membership &membership);
 
+        // New Feature!!!
+        // Returns the result of trying to update the data associated with a
+        // group membership.
+        // A None is returned if the specified membership doesn't exist,
+        // e.g., it can be removed before this call can read it content.
+        process::Future<bool> post (
+                const Membership &membership,
+                const std::string &data
+        );
+
         // Returns a future that gets set when the group memberships differ
         // from the "expected" memberships specified.
         process::Future<std::set<Membership>> watch(
@@ -187,6 +197,11 @@ namespace zookeeper {
         process::Future<Option<std::string>> data(
                 const Group::Membership &membership);
 
+        // New Feature!!!
+        process::Future<bool> post(
+                const Group::Membership &membership,
+                const std::string &data);
+
         process::Future<std::set<Group::Membership>> watch(
                 const std::set<Group::Membership> &expected);
 
@@ -216,6 +231,11 @@ namespace zookeeper {
         Result<bool> doCancel(const Group::Membership &membership);
 
         Result<Option<std::string>> doData(const Group::Membership &membership);
+
+        // New Feature!!!
+        Result<bool> doPost(
+                const Group::Membership &membership,
+                const std::string &data);
 
         // Returns true if authentication is successful, false if the
         // failure is retryable and Error otherwise.
@@ -313,6 +333,16 @@ namespace zookeeper {
             process::Promise<Option<std::string>> promise;
         };
 
+        // New Feature
+        struct Post {
+            explicit Post(const Group::Membership &_membership, const std::string &_data)
+                    : membership(_membership), data(_data) { }
+
+            Group::Membership membership;
+            std::string data;
+            process::Promise<bool> promise;
+        };
+
         struct Watch {
             explicit Watch(const std::set<Group::Membership> &_expected)
                     : expected(_expected) { }
@@ -325,6 +355,8 @@ namespace zookeeper {
             std::queue<Join *> joins;
             std::queue<Cancel *> cancels;
             std::queue<Data *> datas;
+            // New Feature
+            std::queue<Post *> posts;
             std::queue<Watch *> watches;
         } pending;
 

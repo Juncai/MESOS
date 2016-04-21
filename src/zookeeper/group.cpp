@@ -41,6 +41,7 @@
 #include "zookeeper/group.hpp"
 #include "zookeeper/watcher.hpp"
 #include "zookeeper/zookeeper.hpp"
+#include "group.hpp"
 
 using namespace process;
 
@@ -133,6 +134,8 @@ GroupProcess::~GroupProcess()
   discard(&pending.joins);
   discard(&pending.cancels);
   discard(&pending.datas);
+  // New Feature!!!
+  discard(&pending.posts);
   discard(&pending.watches);
 
   delete zk;
@@ -266,6 +269,36 @@ Future<Option<string>> GroupProcess::data(const Group::Membership& membership)
     Data* data = new Data(membership);
     pending.datas.push(data);
     return data->promise.future();
+  } else if (result.isError()) {
+    return Failure(result.error());
+  }
+
+  return result.get();
+}
+
+// New Feature!!!
+Future<bool> GroupProcess::post(
+            const Group::Membership& membership,
+            const string& data)
+{
+  if (error.isSome()) {
+    return Failure(error.get());
+  } else if (state != READY) {
+    Post* post = new Post(membership, data);
+    pending.posts.push(post);
+    return post->promise.future();
+  }
+
+  // TODO(benh): Only attempt if the pending queue is empty so that a
+  // client can assume a happens-before ordering of operations (i.e.,
+  // the first request will happen before the second, etc).
+
+  Result<bool> result = doPost(membership, data);
+
+  if (result.isNone()) { // Try again later.
+    Post* post = new Post(membership, data);
+    pending.posts.push(post);
+    return post->promise.future();
   } else if (result.isError()) {
     return Failure(result.error());
   }
@@ -719,6 +752,36 @@ Result<Option<string>> GroupProcess::doData(
 }
 
 
+// New Feature!!!
+Result<bool> GroupProcess::doPost(
+    const Group::Membership& membership,
+    const string& data)
+{
+  CHECK_EQ(state, READY);
+
+  string path = path::join(znode, zkBasename(membership));
+
+  LOG(INFO) << "Trying to post '" << path << "' in ZooKeeper";
+
+  // Post to ephemeral node.
+  int code = zk->set(path, data, -1);
+
+  if (code == ZINVALIDSTATE || (code != ZOK && zk->retryable(code))) {
+    CHECK_NE(zk->getState(), ZOO_AUTH_FAILED_STATE);
+    return None();
+  } else if (code == ZNONODE) {
+    // This can happen because the membership could have expired but
+    // we have yet to receive the update about it.
+    return false;
+  } else if (code != ZOK) {
+    return Error(
+            "Failed to post to ephemeral node '" + path +
+            "' in ZooKeeper: " + zk->message(code));
+  }
+
+  return true;
+}
+
 Try<bool> GroupProcess::cache()
 {
   // Invalidate first (if it's not already).
@@ -825,13 +888,13 @@ void GroupProcess::update()
   }
 }
 
-
+// TODO: New Feature sync post
 Try<bool> GroupProcess::sync()
 {
   LOG(INFO)
-    << "Syncing group operations: queue size (joins, cancels, datas) = ("
+    << "Syncing group operations: queue size (joins, cancels, datas, posts) = ("
     << pending.joins.size() << ", " << pending.cancels.size() << ", "
-    << pending.datas.size() << ")";
+    << pending.datas.size() << ", " << pending.posts.size() << ")";
 
   // The state may be CONNECTED or AUTHENTICATED if Group setup has
   // not finished.
@@ -898,6 +961,22 @@ Try<bool> GroupProcess::sync()
     }
     pending.datas.pop();
     delete data;
+  }
+
+  // New Feature!!!
+  while (!pending.posts.empty()) {
+    Post* post = pending.posts.front();
+    // TODO(benh): Ignore if future has been discarded?
+    Result<bool> result = doPost(post->membership, post->data);
+    if (result.isNone()) {
+      return false; // Try again later.
+    } else if (result.isError()) {
+      post->promise.fail(result.error());
+    } else {
+      post->promise.set(result.get());
+    }
+    pending.posts.pop();
+    delete post;
   }
 
   // Get cache of memberships if we don't have one. Note that we do
@@ -1041,6 +1120,13 @@ Future<Option<string>> Group::data(const Group::Membership& membership)
   return dispatch(process, &GroupProcess::data, membership);
 }
 
+// New Feature!!!
+Future<bool> Group::post(
+            const Group::Membership& membership,
+            const string& data)
+{
+  return dispatch(process, &GroupProcess::post, membership, data);
+}
 
 Future<set<Group::Membership>> Group::watch(
     const set<Group::Membership>& expected)
