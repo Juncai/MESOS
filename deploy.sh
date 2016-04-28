@@ -1,4 +1,4 @@
-src=~/git/mesos_project/MESOS/src
+src=~/git/MESOS/src
 tar=~/git/mesos/src
 cp $src/master/detector.cpp $tar/master/detector.cpp
 cp $src/master/detector.hpp $tar/master/detector.hpp

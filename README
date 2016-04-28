@@ -1,0 +1,12 @@
+MESOS with Multiple Active Masters
+	Based on commit: f978d3ce97ec22fc6f4e52a41ff8e22616c76d55
+
+	- deploy: change the 'src' and 'tar' path in the 'deploy.sh' script to the proper path, then run the script to apply the change to the original MESOS source.
+	- build the MESOS
+	- start ZooKeeper
+	- start master nodes with additional option '--num_of_leaders=N' and '--lb_strategy=STRATEGY'
+		- N is the number of active masters
+		- STRATEGY can be 'R' for random master assignment or 'LRU' for timestamp based master assignment
+	
+	- start slave nodes with additional option '--num_of_leaders=N' and '--lb_strategy=STRATEGY'
+
