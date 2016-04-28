@@ -15,6 +15,7 @@
 // limitations under the License
 
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <map>
@@ -33,7 +34,7 @@
 #include "zookeeper/detector.hpp"
 #include "zookeeper/group.hpp"
 
-#define NUM_LEADERS 3
+#define NUM_OF_LEADERS 3;
 
 using namespace process;
 
@@ -41,6 +42,7 @@ using std::set;
 using std::string;
 using std::vector;
 using std::map;
+using std::stringstream;
 
 namespace zookeeper {
 
@@ -66,6 +68,12 @@ namespace zookeeper {
         // Invoked when the group memberships have changed.
         void watched(const Future<set<Group::Membership> > &memberships);
 
+        // single leader election
+        void singleLeaderElection(const Future<set<Group::Membership> > &memberships);
+
+        // multiple-leader election
+        void multiLeaderElection(const Future<set<Group::Membership> > &memberships);
+
         Group *group;
         Option<Group::Membership> leader;
         set<Promise<Option<Group::Membership> > *> promises;
@@ -76,8 +84,11 @@ namespace zookeeper {
         // TODO add additional info for maintaining multiple masters and load balancing
         // 1 for master; 2 for slave; 3 for scheduler
         int role;
+
         // address and other info (starved?) for master; resource, isFree? for slave; resource expectation? for scheduler
-        string addInfo;
+        string localAddress;
+        int numOfLeaders;
+        string lbStrategy;
         // for seen masters' address
         map<int32_t, string> addrMap;
     };
@@ -88,8 +99,26 @@ namespace zookeeper {
             : ProcessBase(ID::generate("leader-detector")),
               group(_group),
               leader(None()),
-              role(_role),
-              addInfo(_addInfo) { }
+              role(_role) {
+        if (role == 3) {
+            numOfLeaders = NUM_OF_LEADERS;
+            lbStrategy = "R";
+
+        } else {
+            vector<string> infoVector;
+            stringstream sStream(_addInfo);
+            string info;
+            while (std::getline(sStream, info, ' ')) {
+                infoVector.push_back(info);
+            }
+            if (infoVector.size() == 3) {
+                localAddress = infoVector[0];
+                numOfLeaders = atoi(infoVector[1].c_str());
+                lbStrategy = infoVector[2];
+            }
+        }
+
+    }
 
     LeaderDetectorProcess::LeaderDetectorProcess(Group *_group)
             : ProcessBase(ID::generate("leader-detector")),
@@ -139,6 +168,219 @@ namespace zookeeper {
                 .onAny(defer(self(), &Self::watched, lambda::_1));
     }
 
+    void LeaderDetectorProcess::singleLeaderElection(
+            const Future<set<Group::Membership> > &memberships) {
+        // Run an "election". The leader is the oldest member (smallest
+        // membership id). We do not fulfill any of our promises if the
+        // incumbent wins the election.
+        Option<Group::Membership> current;
+        foreach(
+        const Group::Membership &membership, memberships.get()) {
+            current = min(current, membership);
+        }
+
+        if (current != leader) {
+            LOG(INFO) << "Detected a new leader: "
+            << (current.isSome()
+                ? "(id='" + stringify(current.get().id()) + "')"
+                : "None");
+
+            foreach(Promise < Option<Group::Membership> > *promise, promises)
+            {
+                promise->set(current);
+                delete promise;
+            }
+            promises.clear();
+        }
+
+        leader = current;
+        watch(memberships.get());
+    }
+
+    void LeaderDetectorProcess::multiLeaderElection(
+            const Future<set<Group::Membership> > &memberships) {
+        // Run an "election" for multiple leaders in the MESOS.
+        // The leaders is the oldest members (smallest
+        // membership ids). We do not fulfill any of our promises if the
+        // incumbent wins the election.
+        // TODO detect two leaders instead of one
+        vector<Option<Group::Membership>> currents(numOfLeaders);
+        Option<Group::Membership> current;
+        foreach(
+        const Group::Membership &membership, memberships.get()) {
+            int maxInd = 0;
+            if (currents[0].isNone()) {
+                currents[0] = membership;
+            } else {
+                for (int i = 1; i < numOfLeaders; i++) {
+                    if (currents[i].isNone()) {
+                        maxInd = i;
+                        break;
+                    } else if (currents[i].get().id() > currents[maxInd].get().id()) {
+                        maxInd = i;
+                    }
+                }
+            }
+            if (currents[maxInd].isNone() || membership.id() < currents[maxInd].get().id()) {
+                currents[maxInd] = membership;
+            }
+        }
+
+        // make the smallest candidate as the first element
+        if (currents[0].isSome()) {
+            int minInd = 0;
+            for (int i = 1; i < numOfLeaders; i++) {
+                if (currents[i].isNone()) {
+                    break;
+                } else if (currents[i].get().id() < currents[minInd].get().id()) {
+                    minInd = i;
+                }
+            }
+            if (minInd != 0) {
+                Option<Group::Membership> tmp = currents[0];
+                currents[0] = currents[minInd];
+                currents[minInd] = tmp;
+            }
+        }
+
+        if (role == 1) {
+            // select local leader for master
+            // if the current master is one of the global leaders, it is the local leader
+            // else it will be a backup master and local leader will be one of the global leaders
+            current = currents[0];
+            for (int i = 0; i < numOfLeaders; i++) {
+                if (!currents[i].isNone()) {
+                    // first see if saw this membership before
+                    if (addrMap.find(currents[i].get().id()) != addrMap.end()) {
+                        if (addrMap[currents[i].get().id()] == localAddress) {
+                            current = currents[i];
+                            break;
+                        }
+                    } else {
+                        string data = group->data(currents[i].get()).get().get();
+                        JSON::Object object = JSON::parse<JSON::Object>(data).get();
+                        string pidPath = "pid";
+                        string pid = stringify(object.values[pidPath]);
+                        string addr = pid.substr(8, pid.size() - 9);
+                        LOG(INFO) << "In detector see addr: " << addr;
+                        addrMap[currents[i].get().id()] = addr;
+                        if (addr == localAddress) {
+                            // if the current master is one of the leaders, assign itself as the local leader
+                            current = currents[i];
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (current != leader) {
+                LOG(INFO) << "Detected a new leader: "
+                << (current.isSome()
+                    ? "(id='" + stringify(current.get().id()) + "')"
+                    : "None");
+
+                foreach(Promise < Option<Group::Membership> > *promise, promises)
+                {
+                    promise->set(current);
+                    delete promise;
+                }
+                promises.clear();
+                // assign new leader
+                leader = current;
+            }
+        } else {
+            // select local leader for slave/scheduler
+            // if previous local leader is among the global leaders, nothing changes
+            // else the new local leader will be chosed based on the given load balancing strategy
+
+            // first check if the previous local leader is still one of the global leaders
+            bool preLeaderFound = false;
+            int numOfL = 0;
+            for (int i = 0; i < numOfLeaders; i++) {
+                if (currents[i] == leader) {
+                    preLeaderFound = true;
+                    break;
+                }
+                if (currents[i].isNone()) {
+                    break;
+                } else {
+                    numOfL++;
+                }
+            }
+
+            if (!preLeaderFound) {
+                char numStr[21];
+                sprintf(numStr, "%d", numOfL);
+                LOG(INFO) << "Detected leaders: " << numStr;
+                if (lbStrategy == "R") {
+                    // random master assignment
+                    current = currents[rand() % numOfL];
+                } else if (lbStrategy == "LRU") {
+                    // LRU master assignment
+                    current = currents[0];
+
+                    if (numOfL > 0) {
+                        string curr_data = group->data(current.get()).get().get();
+                        JSON::Object curr_object = JSON::parse<JSON::Object>(curr_data).get();
+
+                        for (int i = 0; i < numOfL; i++) {
+
+                            // try to get timestamp from the master's znode data
+                            string temp_data = group->data(currents[i].get()).get().get();
+                            JSON::Object temp_object = JSON::parse<JSON::Object>(temp_data).get();
+
+                            if (temp_object.values.find("updated") != temp_object.values.end()) {
+                                if (stringify(temp_object.values["updated"]) <
+                                    stringify(curr_object.values["updated"])) {
+                                    current = currents[i];
+                                    curr_data = group->data(current.get()).get().get();
+                                    curr_object = JSON::parse<JSON::Object>(curr_data).get();
+                                }
+                            } else {
+                                current = currents[i];
+                                break;
+                            }
+                        }
+
+                    }
+
+                    if (current.isSome()) {
+                        string data_str = group->data(current.get()).get().get();
+                        JSON::Object object_json = JSON::parse<JSON::Object>(data_str).get();
+
+                        object_json.values["updated"] = static_cast<long int> (time(0));
+
+                        string data = stringify(object_json);
+
+                        bool result = group->post(current.get(), data).get();
+
+                        if (result) {
+                            LOG(INFO) << "SUCCESS! Update a leader: " << "(id='" << stringify(current.get().id()) <<
+                            ")";
+                        } else {
+                            LOG(INFO) << "FAIL! Update a leader: " << "(id='" << stringify(current.get().id()) << ")";
+                        }
+
+                    }
+                }
+
+                LOG(INFO) << "Detected a new leader: "
+                << (current.isSome()
+                    ? "(id='" + stringify(current.get().id()) + "')"
+                    : "None");
+
+                foreach(Promise < Option<Group::Membership> > *promise, promises)
+                {
+                    promise->set(current);
+                    delete promise;
+                }
+                promises.clear();
+                // TODO assign new leader
+                leader = current;
+            }
+        }
+        watch(memberships.get());
+    }
 
     void LeaderDetectorProcess::watched(
             const Future<set<Group::Membership> > &memberships) {
@@ -166,214 +408,13 @@ namespace zookeeper {
             VLOG(1) << "The current leader (id=" << leader.get().id() << ") is lost";
         }
 
-        // Run an "election". The leader is the oldest member (smallest
-        // membership id). We do not fulfill any of our promises if the
-        // incumbent wins the election.
-        // TODO detect two leaders instead of one
-        vector<Option<Group::Membership>> currents(NUM_LEADERS);
-        Option<Group::Membership> current;
-//        Option<Group::Membership> current0;
-//        Option<Group::Membership> current1;
-//        currents[0] = current0;
-//        currents[1] = current1;
-        foreach(
-        const Group::Membership &membership, memberships.get()) {
-            int maxInd = 0;
-            if (currents[0].isNone()) {
-                currents[0] = membership;
-            } else {
-                for (int i = 1; i < NUM_LEADERS; i++) {
-                    if (currents[i].isNone()) {
-                        maxInd = i;
-                        break;
-                    } else if (currents[i].get().id() > currents[maxInd].get().id()) {
-                        maxInd = i;
-                    }
-                }
-            }
-            if (currents[maxInd].isNone() || membership.id() < currents[maxInd].get().id()) {
-                currents[maxInd] = membership;
-            }
-//            if (currents[0] != min(currents[0], membership)) {
-//                currents[1] = currents[0];
-//                currents[0] = membership;
-//            } else {
-//                currents[1] = min(currents[1], membership);
-//            }
-//            current = min(current, membership);
-        }
-
-        // make the smallest candidate as the first element
-        if (currents[0].isSome()) {
-            int minInd = 0;
-            for (int i = 1; i < NUM_LEADERS; i++) {
-                if (currents[i].isNone()) {
-                    break;
-                } else if (currents[i].get().id() < currents[minInd].get().id()) {
-                    minInd = i;
-                }
-            }
-            if (minInd != 0) {
-                Option<Group::Membership> tmp = currents[0];
-                currents[0] = currents[minInd];
-                currents[minInd] = tmp;
-            }
-        }
-
-        if (role == 1) {
-            current = currents[0];
-            for (int i = 0; i < NUM_LEADERS; i++) {
-                if (!currents[i].isNone()) {
-                    // first see if saw this membership before
-                    if (addrMap.find(currents[i].get().id()) != addrMap.end()) {
-                        if (addrMap[currents[i].get().id()] == addInfo) {
-                            current = currents[i];
-                            break;
-                        }
-                    } else {
-                        string data = group->data(currents[i].get()).get().get();
-                        JSON::Object object = JSON::parse<JSON::Object>(data).get();
-                        string pidPath = "pid";
-                        string pid = stringify(object.values[pidPath]);
-                        string addr = pid.substr(8, pid.size() - 9);
-                        LOG(INFO) << "In detector see addr: " << addr;
-                        addrMap[currents[i].get().id()] = addr;
-                        if (addr == addInfo) {
-                            current = currents[i];
-                            break;
-                        }
-                    }
-                }
-            }
-//            if (current.isSome()) {
-//                // TODO for master
-//                string data = group->data(current.get()).get().get();
-//                JSON::Object object = JSON::parse<JSON::Object>(data).get();
-//                string pidPath = "pid";
-//                string pid = stringify(object.values[pidPath]);
-//                string addr = pid.substr(8, pid.size() - 9);
-//                LOG(INFO) << "In detector see addr: " << addr;
-//                if (addr != addInfo) {
-//                    LOG(INFO) << "Addr " << addr << " not equals to " << addInfo;
-//                    data = group->data(current2.get()).get().get();
-//                    object = JSON::parse<JSON::Object>(data).get();
-//                    pid = stringify(object.values[pidPath]);
-//                    addr = pid.substr(8, pid.size() - 9);
-//                    LOG(INFO) << "In detector see addr: " << addr;
-//                    if (addr == addInfo) {
-//                        LOG(INFO) << "Addr " << addr << " equals to " << addInfo;
-//                        current = current2;
-//                    }
-//                }
-//            }
-            if (current != leader) {
-                LOG(INFO) << "Detected a new leader: "
-                << (current.isSome()
-                    //                    << (current.isSome()
-                    ? "(id='" + stringify(current.get().id()) + "')"
-                    : "None");
-
-                foreach(Promise < Option<Group::Membership> > *promise, promises)
-                {
-                    promise->set(current);
-                    delete promise;
-                }
-                promises.clear();
-                // TODO assign new leader
-                leader = current;
-            }
+        if (role == 0) {
+            // original leader election algorithm
+            singleLeaderElection(memberships);
         } else {
-            bool preLeaderFound = false;
-            int numOfLeaders = 0;
-            for (int i = 0; i < NUM_LEADERS; i++) {
-                if (currents[i] == leader) {
-                    preLeaderFound = true;
-                    break;
-                }
-                if (currents[i].isNone()) {
-                    break;
-                } else {
-                    numOfLeaders++;
-                }
-            }
-            if (!preLeaderFound) {
-                char numStr[21];
-                sprintf(numStr, "%d", numOfLeaders);
-                LOG(INFO) << "Detected leaders: " << numStr;
-
-                current = currents[0];
-
-                if (numOfLeaders > 0) {
-
-                    string curr_data = group->data(current.get()).get().get();
-                    JSON::Object curr_object = JSON::parse<JSON::Object>(curr_data).get();
-
-                    for (int i =0; i < numOfLeaders; i++) {
-
-                        string temp_data = group->data(currents[i].get()).get().get();
-                        JSON::Object temp_object = JSON::parse<JSON::Object>(temp_data).get();
-
-                        if (temp_object.values.find("updated") != temp_object.values.end()) {
-                            if (stringify(temp_object.values["updated"]) < stringify(curr_object.values["updated"])) {
-                                current = currents[i];
-                                curr_data = group->data(current.get()).get().get();
-                                curr_object = JSON::parse<JSON::Object>(curr_data).get();
-                            }
-                        } else {
-                            current = currents[i];
-                            break;
-                        }
-                    }
-
-                }
-
-                if (current.isSome()) {
-                    string data_str = group->data(current.get()).get().get();
-                    JSON::Object object_json = JSON::parse<JSON::Object>(data_str).get();
-
-                    object_json.values["updated"] = static_cast<long int> (time(0));
-
-                    string data = stringify(object_json);
-
-                    bool result = group->post(current.get(), data).get();
-
-                    if (result) {
-                        LOG(INFO) << "SUCCESS! Update a leader: " << "(id='" << stringify(current.get().id()) << ")";
-                    } else {
-                        LOG(INFO) << "FAIL! Update a leader: " << "(id='" << stringify(current.get().id()) << ")";
-                    }
-
-                }
-
-//                current = currents[rand() % numOfLeaders];
-//                current = currents[0];
-//                // TODO need to modify the logic for load balancing
-//                if (currents[1].isSome()) {
-//                    LOG(INFO) << "Detected two leaders!";
-//                    current = currents[1];
-////                current = (time(0) % 2 == 0) ? current0 : current1;
-//                }
-
-
-
-                LOG(INFO) << "Detected a new leader: "
-                << (current.isSome()
-                    ? "(id='" + stringify(current.get().id()) + "')"
-                    : "None");
-
-                foreach(Promise < Option<Group::Membership> > *promise, promises)
-                {
-                    promise->set(current);
-                    delete promise;
-                }
-                promises.clear();
-                // TODO assign new leader
-                leader = current;
-            }
+            // if the role is set, then perform multiple leader election
+            multiLeaderElection(memberships);
         }
-
-//        leader = current;
-        watch(memberships.get());
     }
 
 // TODO for master, add self address to the constructor for leader detection

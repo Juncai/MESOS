@@ -143,6 +143,18 @@ int main(int argc, char** argv)
             "the IP address which the slave will try to bind to.\n"
             "Cannot be used in conjunction with `--ip`.");
 
+  Option<string> num_of_leaders;
+  flags.add(&num_of_leaders,
+            "num_of_leaders",
+            "Number of active masters to maintain. ");
+
+  Option<string> lb_strategy;
+  flags.add(&lb_strategy,
+            "lb_strategy",
+            "Load balancing strategy to be used in master assignment for\n"
+            "slaves and schedulers. For now, it can be R for Random Assignment,\n"
+            " or LRU for Least Recently Used Assignment. ");
+
   Try<Nothing> load = flags.load("MESOS_", argc, argv);
 
   // TODO(marco): this pattern too should be abstracted away
@@ -260,15 +272,33 @@ int main(int argc, char** argv)
       << "Failed to create a containerizer: " << containerizer.error();
   }
 
-  // TODO add role to detector (2 for slave)
-  string addInfo = "";
-  Try<MasterDetector*> detector = MasterDetector::create(master.get(), 2, addInfo);
-//  Try<MasterDetector*> detector = MasterDetector::create(master.get());
+  MasterDetector *detectorReal;
 
-  if (detector.isError()) {
-    EXIT(EXIT_FAILURE)
-      << "Failed to create a master detector: " << detector.error();
+//  Try<MasterDetector*> detector;
+  if (num_of_leaders.isSome() && lb_strategy.isSome()) {
+    // TODO add role (2 for slave), number of leaders and load balancing strategy to detector
+    string addInfo = "RESERVED";
+    addInfo = addInfo + " " + num_of_leaders.get() + " " + lb_strategy.get();
+    LOG(INFO) << "Master detector with addInfo: " << addInfo;
+    Try<MasterDetector*> detector = MasterDetector::create(master.get(), 2, addInfo);
+    if (detector.isError()) {
+      EXIT(EXIT_FAILURE)
+        << "Failed to create a master detector: " << detector.error();
+    }
+    detectorReal = detector.get();
+  } else {
+//  Try<MasterDetector*> detector = MasterDetector::create(master.get());
+    Try<MasterDetector*> detector = MasterDetector::create(master.get());
+    if (detector.isError()) {
+      EXIT(EXIT_FAILURE)
+        << "Failed to create a master detector: " << detector.error();
+    }
+    detectorReal = detector.get();
   }
+//  if (detector.isError()) {
+//    EXIT(EXIT_FAILURE)
+//      << "Failed to create a master detector: " << detector.error();
+//  }
 
   if (flags.firewall_rules.isSome()) {
     vector<Owned<FirewallRule>> rules;
@@ -333,7 +363,8 @@ int main(int argc, char** argv)
   Slave* slave = new Slave(
       id,
       flags,
-      detector.get(),
+      detectorReal,
+//      detector.get(),
       containerizer.get(),
       &files,
       &gc,
@@ -350,7 +381,8 @@ int main(int argc, char** argv)
 
   delete qosController.get();
 
-  delete detector.get();
+//  delete detector.get();
+  delete detectorReal;
 
   delete containerizer.get();
 

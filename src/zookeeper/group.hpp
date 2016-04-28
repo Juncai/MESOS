@@ -147,8 +147,8 @@ namespace zookeeper {
         // Returns the result of trying to update the data associated with a
         // group membership.
         // A None is returned if the specified membership doesn't exist,
-        // e.g., it can be removed before this call can read it content.
-        process::Future<bool> post (
+        // e.g., it can be removed before this call can update its content.
+        process::Future<bool> post(
                 const Membership &membership,
                 const std::string &data
         );

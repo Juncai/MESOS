@@ -168,6 +168,18 @@ int main(int argc, char** argv)
             "the IP address which the master will try to bind to.\n"
             "Cannot be used in conjunction with `--ip`.");
 
+  Option<string> num_of_leaders;
+  flags.add(&num_of_leaders,
+            "num_of_leaders",
+            "Number of active masters to maintain. ");
+
+  Option<string> lb_strategy;
+  flags.add(&lb_strategy,
+            "lb_strategy",
+            "Load balancing strategy to be used in master assignment for\n"
+            "slaves and schedulers. For now, it can be R for Random Assignment,\n"
+            " or LRU for Least Recently Used Assignment. ");
+
   Try<Nothing> load = flags.load("MESOS_", argc, argv);
 
   if (load.isError()) {
@@ -341,18 +353,35 @@ int main(int argc, char** argv)
   }
   contender = contender_.get();
 
-  // TODO add role to detector (1 for master)
-  char portstr[21];
-  sprintf(portstr, "%d", port);
-  string addInfo = ip.get() + ":" + portstr;
-  LOG(INFO) << "Master detector with addInfo: " << addInfo;
-  Try<MasterDetector*> detector_ = MasterDetector::create(zk, 1, addInfo);
-//  Try<MasterDetector*> detector_ = MasterDetector::create(zk);
-  if (detector_.isError()) {
-    EXIT(EXIT_FAILURE)
-      << "Failed to create a master detector: " << detector_.error();
+//  Try<MasterDetector*> detector_;
+  if (num_of_leaders.isSome() && lb_strategy.isSome()) {
+    // TODO add role (1 for master), number of leaders and load balancing strategy to detector
+    char portstr[21];
+    sprintf(portstr, "%d", port);
+    string addInfo = ip.get() + ":" + portstr;
+    addInfo = addInfo + " " + num_of_leaders.get() + " " + lb_strategy.get();
+    LOG(INFO) << "Master detector with addInfo: " << addInfo;
+    Try<MasterDetector*> detector_ = MasterDetector::create(zk, 1, addInfo);
+    if (detector_.isError()) {
+      EXIT(EXIT_FAILURE)
+        << "Failed to create a master detector: " << detector_.error();
+    }
+    detector = detector_.get();
+  } else {
+    Try<MasterDetector*> detector_ = MasterDetector::create(zk);
+    if (detector_.isError()) {
+      EXIT(EXIT_FAILURE)
+        << "Failed to create a master detector: " << detector_.error();
+    }
+    detector = detector_.get();
   }
-  detector = detector_.get();
+//  Try<MasterDetector*> detector_ = MasterDetector::create(zk, 1, addInfo);
+//  Try<MasterDetector*> detector_ = MasterDetector::create(zk);
+//  if (detector_.isError()) {
+//    EXIT(EXIT_FAILURE)
+//      << "Failed to create a master detector: " << detector_.error();
+//  }
+//  detector = detector_.get();
 
   Option<Authorizer*> authorizer_ = None();
 
